@@ -26,3 +26,24 @@ unpaywall:
 scholar:
   delay_seconds: 10.0
   use_proxy: false
+  delay_after_rotation: 3.0  # Reduced delay after VPN rotation (fresh IP)
+
+# ExpressVPN settings (opt-in via --use-vpn)
+vpn:
+  tool: "expressvpnctl"
+  rotation_strategy: "smart"  # random / sequential / smart (avoids last 5 locations)
+  preferred_locations:
+    - "usa - new york"
+    - "uk - london"
+    - "canada - toronto"
+    - "germany - frankfurt"
+    - "netherlands - amsterdam"
+    - "sweden"
+    - "switzerland"
+    - "france - paris"
+  connection_timeout: 30
+  post_connect_delay: 5
+  min_rotation_interval: 60
+  verify_ip_change: true
+  max_rotation_failures: 3
+  rotate_every_n_papers: 20

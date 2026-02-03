@@ -194,6 +194,7 @@ def cli():
 @click.option("--scholar-only", is_flag=True, help="Only search Google Scholar for pending papers.")
 @click.option("--scholar-delay", type=float, default=None, help="Seconds between Google Scholar requests.")
 @click.option("--use-proxy", is_flag=True, help="Use free proxies for Google Scholar requests.")
+@click.option("--use-vpn", is_flag=True, help="Use ExpressVPN IP rotation during Scholar phase.")
 @click.option("--retry-failed", is_flag=True, help="Retry papers marked as 'failed' (reset them to pending).")
 @click.option("--retry-not-found", is_flag=True, help="Retry papers marked as 'not_found' (reset them to pending).")
 @click.option("--unpaywall-email", type=str, default=None, help="Email for Unpaywall API (overrides settings.yaml).")
@@ -203,6 +204,7 @@ def download(
     scholar_only: bool,
     scholar_delay: float | None,
     use_proxy: bool,
+    use_vpn: bool,
     retry_failed: bool,
     retry_not_found: bool,
     unpaywall_email: str | None,
@@ -223,6 +225,30 @@ def download(
     # Override unpaywall email if provided via CLI
     if unpaywall_email:
         settings.setdefault("unpaywall", {})["email"] = unpaywall_email
+
+    # Initialize VPN if requested
+    vpn = None
+    if use_vpn:
+        from src.vpn import VPNSwitcher
+
+        vpn_config = settings.get("vpn", {})
+        vpn = VPNSwitcher(vpn_config)
+
+        if not vpn.is_available():
+            click.echo("Error: --use-vpn specified but ExpressVPN CLI not found.", err=True)
+            sys.exit(1)
+
+        status = vpn.get_status()
+        click.echo(f"VPN active: connected={status.connected}, location={status.location}, ip={status.ip}")
+
+        if not status.connected:
+            click.echo("  Performing initial VPN connection...")
+            if vpn.rotate():
+                status = vpn.get_status()
+                click.echo(f"  Connected: location={status.location}, ip={status.ip}")
+            else:
+                click.echo("Error: Failed to establish initial VPN connection.", err=True)
+                sys.exit(1)
 
     # Load papers and manifest
     papers = load_papers()
@@ -311,13 +337,45 @@ def download(
             if use_proxy or scholar_settings.get("use_proxy", False):
                 setup_proxy()
 
+            if vpn:
+                click.echo(f"  VPN rotation enabled: every {vpn.rotate_every_n} papers (strategy: {vpn.strategy})")
+
+            delay_after_rotation = scholar_settings.get("delay_after_rotation", 3.0)
+            current_delay = scholar_delay
             downloaded = 0
             not_found = 0
             failed = 0
+            scholar_completed = 0
 
             for paper_id in tqdm(pending_ids, desc="Google Scholar", unit="paper"):
+                # Proactive VPN rotation
+                if vpn and not vpn.has_failed_permanently():
+                    if vpn.should_rotate_proactively(scholar_completed):
+                        click.echo(f"\n  Proactive VPN rotation after {scholar_completed} papers...")
+                        if vpn.rotate():
+                            current_delay = delay_after_rotation
+                            click.echo(f"  Rotated. Using reduced delay ({current_delay}s) for fresh IP.")
+
                 title = manifest[paper_id]["title"]
-                pdf_url = scholar_find_pdf_url(title, delay=scholar_delay)
+                pdf_url, was_rate_limited = scholar_find_pdf_url(title, delay=current_delay)
+
+                # Reactive VPN rotation on rate limit
+                if was_rate_limited and vpn and not vpn.has_failed_permanently():
+                    click.echo("\n  Rate limited! Rotating VPN...")
+                    if vpn.rotate():
+                        current_delay = delay_after_rotation
+                        click.echo(f"  Rotated. Retrying paper with fresh IP (delay={current_delay}s)...")
+                        pdf_url, was_rate_limited = scholar_find_pdf_url(title, delay=current_delay)
+                    else:
+                        click.echo("  VPN rotation failed. Marking paper as failed.")
+
+                # If still rate limited after rotation (or no VPN), mark as failed
+                if was_rate_limited:
+                    update_entry(manifest, paper_id, status="failed", source="google_scholar")
+                    failed += 1
+                    save_manifest(manifest, manifest_path)
+                    scholar_completed += 1
+                    continue
 
                 if pdf_url is None:
                     update_entry(manifest, paper_id, status="not_found", source="google_scholar")
@@ -346,6 +404,11 @@ def download(
                         failed += 1
 
                 save_manifest(manifest, manifest_path)
+                scholar_completed += 1
+
+                # Gradually increase delay back to normal after rotation
+                if current_delay < scholar_delay:
+                    current_delay = min(current_delay + 1.0, scholar_delay)
 
             click.echo(f"Google Scholar phase: {downloaded} downloaded, {not_found} not found, {failed} failed")
         else:
