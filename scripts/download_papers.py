@@ -187,9 +187,19 @@ def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl
 
 
 def run_repo_api_phase(
-    manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float, vpn=None
+    manifest: dict,
+    settings: dict,
+    dl_timeout: int,
+    dl_retries: int,
+    dl_delay: float,
+    vpn=None,
+    include_pending: bool = False,
 ) -> None:
-    """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv, OpenAlex)."""
+    """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv, OpenAlex).
+
+    Args:
+        include_pending: If True, also process papers with "pending" status (used with --repos-only + retry flags).
+    """
     from src.arxiv_search import find_pdf_url as arxiv_find_pdf_url
     from src.core_api import find_pdf_url as core_find_pdf_url
     from src.europepmc import find_pdf_url as europepmc_find_pdf_url
@@ -206,11 +216,14 @@ def run_repo_api_phase(
     openalex_delay = openalex_settings.get("delay_seconds", 0.1)
     openalex_email = openalex_settings.get("email") or settings.get("unpaywall", {}).get("email")
 
-    # Get candidates: failed and not_found papers
-    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+    # Get candidates: failed and not_found papers (+ pending if include_pending is set)
+    target_statuses = ["failed", "not_found"]
+    if include_pending:
+        target_statuses.append("pending")
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in target_statuses}
 
     if not candidates:
-        click.echo("  No failed/not_found papers for repository API lookup.")
+        click.echo("  No papers for repository API lookup.")
         return
 
     click.echo(f"  Searching repository APIs for {len(candidates)} papers...")
@@ -290,7 +303,7 @@ def run_repo_api_phase(
     click.echo(f"  CORE: {core_downloaded} downloaded")
 
     # Refresh candidates (remove newly downloaded)
-    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in target_statuses}
 
     # --- 5b: EuropePMC ---
     click.echo(f"\n  5b. EuropePMC ({len(candidates)} papers)...")
@@ -319,7 +332,7 @@ def run_repo_api_phase(
     click.echo(f"  EuropePMC: {epmc_downloaded} downloaded")
 
     # Refresh candidates
-    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in target_statuses}
 
     # --- 5c: arXiv ---
     click.echo(f"\n  5c. arXiv ({len(candidates)} papers)...")
@@ -349,7 +362,7 @@ def run_repo_api_phase(
     click.echo(f"  arXiv: {arxiv_downloaded} downloaded")
 
     # Refresh candidates
-    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in target_statuses}
 
     # --- 5d: OpenAlex ---
     click.echo(f"\n  5d. OpenAlex ({len(candidates)} papers)...")
@@ -604,7 +617,11 @@ def download(
     # --- repos-only shortcut: jump directly to Phase 5 ---
     if repos_only:
         click.echo("\n--- Phase 5: Repository APIs (repos-only mode) ---")
-        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay, vpn=vpn)
+        # Include pending papers if retry flags were used (they reset status to pending)
+        include_pending = retry_failed or retry_not_found
+        run_repo_api_phase(
+            manifest, settings, dl_timeout, dl_retries, dl_delay, vpn=vpn, include_pending=include_pending
+        )
         save_manifest(manifest, manifest_path)
         click.echo(f"\nFinal status: {dict(count_by_status(manifest))}")
         return
