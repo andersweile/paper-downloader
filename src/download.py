@@ -31,7 +31,9 @@ def is_pdf(content: bytes) -> bool:
     return content[:5] == b"%PDF-"
 
 
-def download_pdf(url: str, output_path: Path, timeout: int = 30, max_retries: int = 3, referer: str | None = None) -> bool:
+def download_pdf(
+    url: str, output_path: Path, timeout: int = 30, max_retries: int = 3, referer: str | None = None
+) -> bool:
     """Download a PDF from url to output_path with retries.
 
     Args:
@@ -129,5 +131,41 @@ def get_transform_urls(url: str) -> list[str]:
         if "/pdf" not in path:
             clean_path = path.rstrip("/")
             alternatives.append(f"https://{domain}{clean_path}/pdf")
+
+    # Springer: /article/ -> /content/pdf/ with .pdf extension
+    if "link.springer.com" in domain:
+        if "/article/" in path:
+            pdf_path = path.replace("/article/", "/content/pdf/") + ".pdf"
+            alternatives.append(f"https://{domain}{pdf_path}")
+
+    # IEEE: /document/{id} -> stamp PDF endpoint
+    if "ieeexplore.ieee.org" in domain:
+        ieee_match = re.search(r"/document/(\d+)", path)
+        if ieee_match:
+            arnumber = ieee_match.group(1)
+            alternatives.append(f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?arnumber={arnumber}")
+
+    # ACM: /doi/{path} -> /doi/pdf/{path}
+    if "dl.acm.org" in domain:
+        if "/doi/" in path and "/doi/pdf/" not in path:
+            pdf_path = path.replace("/doi/", "/doi/pdf/", 1)
+            alternatives.append(f"https://{domain}{pdf_path}")
+
+    # OUP (Oxford University Press): append PDF format parameter
+    if "academic.oup.com" in domain:
+        if "pdfformat" not in path:
+            alternatives.append(f"{url}?pdfformat=full")
+
+    # doi.org links: resolve and extract the actual publisher URL
+    if "doi.org" in domain:
+        try:
+            resp = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=15)
+            final_url = resp.url
+            if final_url != url:
+                # Recursively try transforms on the resolved URL
+                alternatives.append(final_url)
+                alternatives.extend(get_transform_urls(final_url))
+        except requests.exceptions.RequestException:
+            pass  # If we can't resolve, skip
 
     return alternatives

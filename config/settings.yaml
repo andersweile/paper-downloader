@@ -47,3 +47,32 @@ vpn:
   verify_ip_change: true
   max_rotation_failures: 3
   rotate_every_n_papers: 20
+
+# CORE.ac.uk settings (Phase 5a)
+core:
+  delay_seconds: 0.2
+
+# EuropePMC settings (Phase 5b)
+europepmc:
+  delay_seconds: 0.2
+
+# arXiv settings (Phase 5c)
+arxiv:
+  delay_seconds: 3.0  # arXiv recommends 3s between requests
+
+# Crossref settings (Phase 7)
+crossref:
+  delay_seconds: 0.5
+
+# Institutional proxy settings (Phase 8, opt-in via --use-proxy-institutional)
+proxy:
+  base_url: ""  # e.g., "https://login.proxy.itu.dk/login?url="
+  publisher_domains:  # Override default list if needed (leave empty to use defaults)
+
+# Sci-Hub settings (Phase 9, opt-in via --use-scihub)
+scihub:
+  mirrors:
+    - "https://sci-hub.se"
+    - "https://sci-hub.st"
+    - "https://sci-hub.ru"
+  delay_seconds: 3.0

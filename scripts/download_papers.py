@@ -1,11 +1,12 @@
 """CLI entry point for downloading LBD systematic review papers."""
 
+import csv
 import json
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import click
 from tqdm import tqdm
@@ -13,7 +14,7 @@ from tqdm import tqdm
 # Add project root to path so src imports work
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.core.file_paths import PDF_DIR, get_manifest_path, get_source_json_path, load_settings
+from src.core.file_paths import DATA_DIR, PDF_DIR, get_manifest_path, get_source_json_path, load_settings
 from src.core.log import get_logger
 from src.doi import batch_lookup_dois, extract_dois_from_papers
 from src.download import download_pdf, get_transform_urls
@@ -129,7 +130,8 @@ def run_unpaywall_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retr
 
         if success:
             update_entry(
-                manifest, paper_id,
+                manifest,
+                paper_id,
                 status="downloaded",
                 source="unpaywall",
                 url=pdf_url,
@@ -146,7 +148,7 @@ def run_unpaywall_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retr
 
 
 def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
-    """Phase 3: Retry failed papers using domain-specific URL transforms."""
+    """Phase 3/6: Retry failed papers using domain-specific URL transforms."""
     # Find failed papers that have a URL we can try to transform
     candidates = []
     for pid, entry in manifest.items():
@@ -169,7 +171,8 @@ def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl
 
             if success:
                 update_entry(
-                    manifest, paper_id,
+                    manifest,
+                    paper_id,
                     status="downloaded",
                     source="url_transform",
                     url=alt_url,
@@ -183,6 +186,232 @@ def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl
     click.echo(f"  URL transforms: {downloaded} downloaded")
 
 
+def run_repo_api_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
+    """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv)."""
+    from src.arxiv_search import find_pdf_url as arxiv_find_pdf_url
+    from src.core_api import find_pdf_url as core_find_pdf_url
+    from src.europepmc import find_pdf_url as europepmc_find_pdf_url
+
+    core_delay = settings.get("core", {}).get("delay_seconds", 0.2)
+    epmc_delay = settings.get("europepmc", {}).get("delay_seconds", 0.2)
+    arxiv_delay = settings.get("arxiv", {}).get("delay_seconds", 3.0)
+
+    # Get candidates: failed and not_found papers
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+
+    if not candidates:
+        click.echo("  No failed/not_found papers for repository API lookup.")
+        return
+
+    click.echo(f"  Searching repository APIs for {len(candidates)} papers...")
+
+    # --- 5a: CORE.ac.uk ---
+    click.echo(f"\n  5a. CORE.ac.uk ({len(candidates)} papers)...")
+    core_downloaded = 0
+    for pid, entry in tqdm(candidates.items(), desc="CORE", unit="paper"):
+        doi = entry.get("doi")
+        title = entry.get("title")
+        pdf_url = core_find_pdf_url(doi=doi, title=title, delay=core_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="core",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                core_downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  CORE: {core_downloaded} downloaded")
+
+    # Refresh candidates (remove newly downloaded)
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+
+    # --- 5b: EuropePMC ---
+    click.echo(f"\n  5b. EuropePMC ({len(candidates)} papers)...")
+    epmc_downloaded = 0
+    for pid, entry in tqdm(candidates.items(), desc="EuropePMC", unit="paper"):
+        doi = entry.get("doi")
+        title = entry.get("title")
+        pdf_url = europepmc_find_pdf_url(doi=doi, title=title, delay=epmc_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="europepmc",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                epmc_downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  EuropePMC: {epmc_downloaded} downloaded")
+
+    # Refresh candidates
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+
+    # --- 5c: arXiv ---
+    click.echo(f"\n  5c. arXiv ({len(candidates)} papers)...")
+    arxiv_downloaded = 0
+    for pid, entry in tqdm(candidates.items(), desc="arXiv", unit="paper"):
+        title = entry.get("title")
+        if not title:
+            continue
+        pdf_url = arxiv_find_pdf_url(title=title, delay=arxiv_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="arxiv",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                arxiv_downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  arXiv: {arxiv_downloaded} downloaded")
+    click.echo(f"  Repository APIs total: {core_downloaded + epmc_downloaded + arxiv_downloaded} downloaded")
+
+
+def run_crossref_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
+    """Phase 7: Crossref DOI content negotiation."""
+    from src.crossref import find_pdf_url as crossref_find_pdf_url
+
+    crossref_delay = settings.get("crossref", {}).get("delay_seconds", 0.5)
+
+    # Get failed/not_found papers with DOIs
+    candidates = get_papers_with_doi(manifest, statuses=["failed", "not_found"])
+
+    if not candidates:
+        click.echo("  No failed/not_found papers with DOIs for Crossref lookup.")
+        return
+
+    click.echo(f"  Trying Crossref content negotiation for {len(candidates)} papers...")
+    downloaded = 0
+
+    for pid, doi in tqdm(candidates.items(), desc="Crossref", unit="paper"):
+        pdf_url = crossref_find_pdf_url(doi=doi, delay=crossref_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="crossref",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  Crossref: {downloaded} downloaded")
+
+
+def run_proxy_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
+    """Phase 8: Retry paywall papers through institutional proxy."""
+    from src.proxy import get_proxy_candidates
+
+    proxy_settings = settings.get("proxy", {})
+    proxy_base = proxy_settings.get("base_url", "")
+    publisher_domains = proxy_settings.get("publisher_domains")
+
+    if not proxy_base:
+        click.echo("  Skipping institutional proxy: no proxy.base_url configured in settings.yaml.")
+        return
+
+    candidates = get_proxy_candidates(manifest, proxy_base, publisher_domains)
+
+    if not candidates:
+        click.echo("  No papers eligible for institutional proxy.")
+        return
+
+    click.echo(f"  Trying institutional proxy for {len(candidates)} papers...")
+    downloaded = 0
+
+    for pid, proxied_url in tqdm(candidates, desc="Institutional Proxy", unit="paper"):
+        output_path = PDF_DIR / f"{pid}.pdf"
+        success = download_pdf(proxied_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+
+        if success:
+            update_entry(
+                manifest,
+                pid,
+                status="downloaded",
+                source="institutional_proxy",
+                url=proxied_url,
+                file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+            )
+            downloaded += 1
+            save_manifest(manifest, get_manifest_path())
+
+        time.sleep(dl_delay)
+
+    click.echo(f"  Institutional proxy: {downloaded} downloaded")
+
+
+def run_scihub_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
+    """Phase 9: Sci-Hub lookup (opt-in only)."""
+    from src.scihub import find_pdf_url as scihub_find_pdf_url
+
+    scihub_settings = settings.get("scihub", {})
+    mirrors = scihub_settings.get("mirrors")
+    scihub_delay = scihub_settings.get("delay_seconds", 3.0)
+
+    # Get failed/not_found papers with DOIs
+    candidates = get_papers_with_doi(manifest, statuses=["failed", "not_found"])
+
+    if not candidates:
+        click.echo("  No failed/not_found papers with DOIs for Sci-Hub lookup.")
+        return
+
+    click.echo(f"  Trying Sci-Hub for {len(candidates)} papers...")
+    downloaded = 0
+
+    for pid, doi in tqdm(candidates.items(), desc="Sci-Hub", unit="paper"):
+        pdf_url = scihub_find_pdf_url(doi=doi, mirrors=mirrors, delay=scihub_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="scihub",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  Sci-Hub: {downloaded} downloaded")
+
+
 @click.group()
 def cli():
     """LBD Systematic Review - PDF Download Pipeline."""
@@ -192,9 +421,12 @@ def cli():
 @cli.command()
 @click.option("--open-access-only", is_flag=True, help="Only download papers with direct open access URLs.")
 @click.option("--scholar-only", is_flag=True, help="Only search Google Scholar for pending papers.")
+@click.option("--repos-only", is_flag=True, help="Only run repository API phases (CORE, EuropePMC, arXiv).")
 @click.option("--scholar-delay", type=float, default=None, help="Seconds between Google Scholar requests.")
 @click.option("--use-proxy", is_flag=True, help="Use free proxies for Google Scholar requests.")
 @click.option("--use-vpn", is_flag=True, help="Use ExpressVPN IP rotation during Scholar phase.")
+@click.option("--use-proxy-institutional", is_flag=True, help="Use institutional proxy for paywall papers.")
+@click.option("--use-scihub", is_flag=True, help="Use Sci-Hub as last resort (explicit opt-in).")
 @click.option("--retry-failed", is_flag=True, help="Retry papers marked as 'failed' (reset them to pending).")
 @click.option("--retry-not-found", is_flag=True, help="Retry papers marked as 'not_found' (reset them to pending).")
 @click.option("--unpaywall-email", type=str, default=None, help="Email for Unpaywall API (overrides settings.yaml).")
@@ -202,9 +434,12 @@ def cli():
 def download(
     open_access_only: bool,
     scholar_only: bool,
+    repos_only: bool,
     scholar_delay: float | None,
     use_proxy: bool,
     use_vpn: bool,
+    use_proxy_institutional: bool,
+    use_scihub: bool,
     retry_failed: bool,
     retry_not_found: bool,
     unpaywall_email: str | None,
@@ -275,6 +510,14 @@ def download(
             click.echo(f"Reset {len(nf_ids)} not_found papers to pending.")
             save_manifest(manifest, manifest_path)
 
+    # --- repos-only shortcut: jump directly to Phase 5 ---
+    if repos_only:
+        click.echo("\n--- Phase 5: Repository APIs (repos-only mode) ---")
+        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+        click.echo(f"\nFinal status: {dict(count_by_status(manifest))}")
+        return
+
     # --- Phase 0: DOI Enrichment ---
     click.echo("\n--- Phase 0: DOI Enrichment ---")
     enrich_dois(papers, manifest, settings)
@@ -297,7 +540,8 @@ def download(
 
                 if success:
                     update_entry(
-                        manifest, paper_id,
+                        manifest,
+                        paper_id,
                         status="downloaded",
                         source="open_access",
                         url=url,
@@ -392,7 +636,8 @@ def download(
 
                     if success:
                         update_entry(
-                            manifest, paper_id,
+                            manifest,
+                            paper_id,
                             status="downloaded",
                             source="google_scholar",
                             url=pdf_url,
@@ -414,8 +659,94 @@ def download(
         else:
             click.echo("\nNo pending papers for Google Scholar lookup.")
 
+    # --- Phase 5: Repository APIs (CORE, EuropePMC, arXiv) ---
+    if not open_access_only and not scholar_only:
+        click.echo("\n--- Phase 5: Repository APIs ---")
+        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+
+    # --- Phase 6: Expanded URL Transforms (re-run on failed with new transforms) ---
+    if not open_access_only and not scholar_only:
+        click.echo("\n--- Phase 6: Expanded URL Transforms ---")
+        run_url_transform_phase(manifest, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+
+    # --- Phase 7: Crossref Content Negotiation ---
+    if not open_access_only and not scholar_only:
+        click.echo("\n--- Phase 7: Crossref Content Negotiation ---")
+        run_crossref_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+
+    # --- Phase 8: Institutional Proxy (opt-in) ---
+    if use_proxy_institutional:
+        click.echo("\n--- Phase 8: Institutional Proxy ---")
+        run_proxy_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+
+    # --- Phase 9: Sci-Hub (opt-in) ---
+    if use_scihub:
+        click.echo("\n--- Phase 9: Sci-Hub ---")
+        run_scihub_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        save_manifest(manifest, manifest_path)
+
     # --- Summary ---
     click.echo(f"\nFinal status: {dict(count_by_status(manifest))}")
+
+
+@cli.command(name="export-remaining")
+def export_remaining():
+    """Export remaining undownloaded papers to CSV for manual download."""
+    manifest_path = get_manifest_path()
+    manifest = load_manifest(manifest_path)
+
+    if not manifest:
+        click.echo("No manifest found. Run 'download' first.")
+        return
+
+    output_path = DATA_DIR / "manual_downloads.csv"
+    remaining = []
+
+    for pid, entry in manifest.items():
+        if entry["status"] in ("failed", "not_found", "pending"):
+            title = entry.get("title", "")
+            authors = entry.get("authors", "")
+            year = entry.get("year", "")
+            doi = entry.get("doi", "")
+            last_url = entry.get("url", "")
+            scholar_query = quote_plus(title)
+            suggested_search = f"https://scholar.google.com/scholar?q={scholar_query}"
+
+            remaining.append(
+                {
+                    "paper_id": pid,
+                    "title": title,
+                    "authors": authors,
+                    "year": year,
+                    "doi": doi,
+                    "status": entry["status"],
+                    "last_url": last_url,
+                    "suggested_search": suggested_search,
+                }
+            )
+
+    if not remaining:
+        click.echo("All papers have been downloaded!")
+        return
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["paper_id", "title", "authors", "year", "doi", "status", "last_url", "suggested_search"]
+        )
+        writer.writeheader()
+        writer.writerows(remaining)
+
+    click.echo(f"Exported {len(remaining)} remaining papers to {output_path}")
+
+    # Breakdown by status
+    status_counts = Counter(r["status"] for r in remaining)
+    for status, count in status_counts.most_common():
+        click.echo(f"  {status}: {count}")
 
 
 @cli.command()
