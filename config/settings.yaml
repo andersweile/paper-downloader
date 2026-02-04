@@ -51,7 +51,7 @@ vpn:
 # CORE.ac.uk settings (Phase 5a)
 # Free API key from https://core.ac.uk/services/api — gives much higher rate limits
 core:
-  api_key: ""  # Get a free key at https://core.ac.uk/services/api
+  api_key: "8WVBAdw26v9LclJ7qyhGSZHf0Ng4t3m1"  # Get a free key at https://core.ac.uk/services/api
   delay_seconds: 1.0
   max_retries: 3  # Retries per paper on 429 with exponential backoff
   backoff_factor: 2.0  # Backoff multiplier: 5s, 10s, 20s
@@ -63,6 +63,13 @@ europepmc:
 # arXiv settings (Phase 5c)
 arxiv:
   delay_seconds: 3.0  # arXiv recommends 3s between requests
+
+# OpenAlex settings (Phase 5d)
+# OpenAlex is a free, open catalog with excellent OA coverage
+# Docs: https://docs.openalex.org/
+openalex:
+  email: ""  # Uses unpaywall.email if empty; set for polite pool (better rate limits)
+  delay_seconds: 0.1  # OpenAlex is generous with rate limits
 
 # Crossref settings (Phase 7)
 crossref:

@@ -25,6 +25,7 @@ lbd-systematic-review/
 │   ├── core_api.py             # CORE.ac.uk API lookup (300M+ OA records)
 │   ├── europepmc.py            # EuropePMC API lookup (PubMed Central with better PDF access)
 │   ├── arxiv_search.py         # arXiv API search for preprints
+│   ├── openalex.py             # OpenAlex API lookup (free OA catalog with excellent coverage)
 │   ├── crossref.py             # Crossref API + DOI content negotiation
 │   ├── proxy.py                # Institutional proxy URL rewriting
 │   ├── scihub.py               # Sci-Hub PDF extraction (opt-in only)
@@ -45,7 +46,7 @@ uv run python scripts/download_papers.py download --open-access-only
 # Scholar only (for papers still pending)
 uv run python scripts/download_papers.py download --scholar-only
 
-# Repository APIs only (CORE, EuropePMC, arXiv)
+# Repository APIs only (CORE, EuropePMC, arXiv, OpenAlex)
 uv run python scripts/download_papers.py download --repos-only
 
 # Adjust Scholar delay (default: 10s)
@@ -96,7 +97,7 @@ uv run python scripts/download_papers.py stats
 5. Phase 2: Unpaywall lookup for pending papers with DOIs
 6. Phase 3: URL transforms for failed PMC/bioRxiv/MDPI papers
 7. Phase 4: Google Scholar search by title (with optional VPN rotation)
-8. Phase 5: Repository APIs — CORE.ac.uk, EuropePMC, arXiv (failed/not_found papers)
+8. Phase 5: Repository APIs — CORE.ac.uk, EuropePMC, arXiv, OpenAlex (failed/not_found papers)
 9. Phase 6: Expanded URL transforms — Springer, IEEE, ACM, OUP, doi.org redirect (re-run on failed)
 10. Phase 7: Crossref content negotiation + API PDF links (failed/not_found with DOIs)
 11. Phase 8: Institutional proxy (opt-in via `--use-proxy-institutional`)
@@ -122,13 +123,14 @@ Each entry stores: `title`, `authors`, `year`, `doi`, `status`, `source`, `url`,
 - `core`: Found via CORE.ac.uk API
 - `europepmc`: Found via EuropePMC API
 - `arxiv`: Found via arXiv API search
+- `openalex`: Found via OpenAlex API (free OA catalog)
 - `crossref`: Found via Crossref content negotiation or API
 - `institutional_proxy`: Downloaded through institutional library proxy
 - `scihub`: Found via Sci-Hub
 
 ## URL Transforms
 Applied to failed papers with stored URLs. Supported domains:
-- **PMC**: `/pmc/articles/PMC12345/` → EuropePMC PDF
+- **PMC**: `/pmc/articles/PMC12345/` → Multiple endpoints (EuropePMC, NCBI direct PDF)
 - **bioRxiv/medRxiv**: Append `.full.pdf`
 - **MDPI**: Append `/pdf`
 - **Springer**: `/article/` → `/content/pdf/{doi}.pdf`
@@ -178,6 +180,8 @@ All settings in `config/settings.yaml`:
 - `core.backoff_factor`: Multiplier for backoff delays — 5s, 10s, 20s (default: 2.0)
 - `europepmc.delay_seconds`: Delay between EuropePMC requests (default: 0.2s)
 - `arxiv.delay_seconds`: Delay between arXiv requests (default: 3s, recommended by arXiv)
+- `openalex.email`: Contact email for polite pool (defaults to unpaywall.email)
+- `openalex.delay_seconds`: Delay between OpenAlex requests (default: 0.1s)
 - `crossref.delay_seconds`: Delay between Crossref requests (default: 0.5s)
 - `proxy.base_url`: Institutional proxy prefix URL (e.g., `https://login.proxy.itu.dk/login?url=`)
 - `proxy.publisher_domains`: Override default publisher domain list (optional)

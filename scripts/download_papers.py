@@ -189,10 +189,11 @@ def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl
 def run_repo_api_phase(
     manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float, vpn=None
 ) -> None:
-    """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv)."""
+    """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv, OpenAlex)."""
     from src.arxiv_search import find_pdf_url as arxiv_find_pdf_url
     from src.core_api import find_pdf_url as core_find_pdf_url
     from src.europepmc import find_pdf_url as europepmc_find_pdf_url
+    from src.openalex import find_pdf_url as openalex_find_pdf_url
 
     core_settings = settings.get("core", {})
     core_delay = core_settings.get("delay_seconds", 1.0)
@@ -201,6 +202,9 @@ def run_repo_api_phase(
     core_backoff = core_settings.get("backoff_factor", 2.0)
     epmc_delay = settings.get("europepmc", {}).get("delay_seconds", 0.2)
     arxiv_delay = settings.get("arxiv", {}).get("delay_seconds", 3.0)
+    openalex_settings = settings.get("openalex", {})
+    openalex_delay = openalex_settings.get("delay_seconds", 0.1)
+    openalex_email = openalex_settings.get("email") or settings.get("unpaywall", {}).get("email")
 
     # Get candidates: failed and not_found papers
     candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
@@ -234,8 +238,12 @@ def run_repo_api_phase(
         doi = entry.get("doi")
         title = entry.get("title")
         pdf_url, was_rate_limited = core_find_pdf_url(
-            doi=doi, title=title, delay=core_delay,
-            api_key=core_api_key, max_retries=core_max_retries, backoff_factor=core_backoff,
+            doi=doi,
+            title=title,
+            delay=core_delay,
+            api_key=core_api_key,
+            max_retries=core_max_retries,
+            backoff_factor=core_backoff,
         )
 
         # Reactive VPN rotation on persistent rate limit
@@ -247,8 +255,12 @@ def run_repo_api_phase(
                     consecutive_rate_limits = 0
                     click.echo("  Rotated. Retrying paper with fresh IP...")
                     pdf_url, was_rate_limited = core_find_pdf_url(
-                        doi=doi, title=title, delay=core_delay,
-                        api_key=core_api_key, max_retries=core_max_retries, backoff_factor=core_backoff,
+                        doi=doi,
+                        title=title,
+                        delay=core_delay,
+                        api_key=core_api_key,
+                        max_retries=core_max_retries,
+                        backoff_factor=core_backoff,
                     )
             elif consecutive_rate_limits >= 5:
                 click.echo("\n  CORE: 5 consecutive rate limits without VPN. Aborting CORE phase.")
@@ -335,7 +347,40 @@ def run_repo_api_phase(
             time.sleep(dl_delay)
 
     click.echo(f"  arXiv: {arxiv_downloaded} downloaded")
-    click.echo(f"  Repository APIs total: {core_downloaded + epmc_downloaded + arxiv_downloaded} downloaded")
+
+    # Refresh candidates
+    candidates = {pid: entry for pid, entry in manifest.items() if entry["status"] in ("failed", "not_found")}
+
+    # --- 5d: OpenAlex ---
+    click.echo(f"\n  5d. OpenAlex ({len(candidates)} papers)...")
+    if openalex_email:
+        click.echo(f"  Using polite pool with email: {openalex_email}")
+    openalex_downloaded = 0
+    for pid, entry in tqdm(candidates.items(), desc="OpenAlex", unit="paper"):
+        doi = entry.get("doi")
+        title = entry.get("title")
+        pdf_url = openalex_find_pdf_url(doi=doi, title=title, email=openalex_email, delay=openalex_delay)
+
+        if pdf_url:
+            output_path = PDF_DIR / f"{pid}.pdf"
+            success = download_pdf(pdf_url, output_path, timeout=dl_timeout, max_retries=dl_retries)
+            if success:
+                update_entry(
+                    manifest,
+                    pid,
+                    status="downloaded",
+                    source="openalex",
+                    url=pdf_url,
+                    file_path=str(output_path.relative_to(PDF_DIR.parent.parent)),
+                )
+                openalex_downloaded += 1
+                save_manifest(manifest, get_manifest_path())
+            time.sleep(dl_delay)
+
+    click.echo(f"  OpenAlex: {openalex_downloaded} downloaded")
+    click.echo(
+        f"  Repository APIs total: {core_downloaded + epmc_downloaded + arxiv_downloaded + openalex_downloaded} downloaded"
+    )
 
 
 def run_crossref_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:

@@ -113,12 +113,22 @@ def get_transform_urls(url: str) -> list[str]:
     path = parsed.path
     alternatives: list[str] = []
 
-    # PMC: /pmc/articles/PMC12345/ -> europepmc.org PDF
+    # PMC: Various URL formats -> multiple PDF endpoints
+    # Handles: /pmc/articles/PMC12345/, /pmc/articles/PMC12345/pdf/filename, etc.
     if "ncbi.nlm.nih.gov" in domain or "pmc" in domain:
+        # Extract PMCID from various URL patterns
         pmc_match = re.search(r"(PMC\d+)", path, re.IGNORECASE)
         if pmc_match:
-            pmc_id = pmc_match.group(1)
+            pmc_id = pmc_match.group(1).upper()  # Normalize to uppercase
+            # Try multiple PMC PDF endpoints
+            # 1. EuropePMC PDF format
             alternatives.append(f"https://europepmc.org/articles/{pmc_id}?format=pdf")
+            # 2. Direct NCBI PMC PDF (main article)
+            alternatives.append(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/main.pdf")
+            # 3. NCBI PMC PDF directory (may redirect)
+            alternatives.append(f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/")
+            # 4. EuropePMC backend PDF
+            alternatives.append(f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmc_id}&blobtype=pdf")
 
     # bioRxiv / medRxiv: append .full.pdf if not already present
     if "biorxiv.org" in domain or "medrxiv.org" in domain:
