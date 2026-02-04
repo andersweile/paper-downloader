@@ -49,8 +49,12 @@ vpn:
   rotate_every_n_papers: 20
 
 # CORE.ac.uk settings (Phase 5a)
+# Free API key from https://core.ac.uk/services/api — gives much higher rate limits
 core:
-  delay_seconds: 0.2
+  api_key: ""  # Get a free key at https://core.ac.uk/services/api
+  delay_seconds: 1.0
+  max_retries: 3  # Retries per paper on 429 with exponential backoff
+  backoff_factor: 2.0  # Backoff multiplier: 5s, 10s, 20s
 
 # EuropePMC settings (Phase 5b)
 europepmc:

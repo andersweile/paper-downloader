@@ -138,12 +138,13 @@ Applied to failed papers with stored URLs. Supported domains:
 - **doi.org**: Follow redirect chain, apply matching transform to final URL
 
 ## VPN IP Rotation
-The `--use-vpn` flag enables ExpressVPN-based IP rotation during the Scholar phase to avoid rate limiting.
+The `--use-vpn` flag enables ExpressVPN-based IP rotation during the Scholar and CORE phases to avoid rate limiting.
 
 **Behavior:**
 - **Proactive rotation**: Rotates IP every N papers (default: 20) to prevent rate limits
-- **Reactive rotation**: On rate limit detection (`MaxTriesExceededException`), immediately rotates and retries
-- **Reduced delay after rotation**: Uses `delay_after_rotation` (default: 3s) for fresh IPs, gradually increasing back to normal
+- **Reactive rotation**: On rate limit detection, immediately rotates and retries the paper
+- **Scholar-specific**: Uses `delay_after_rotation` (default: 3s) for fresh IPs, gradually increasing back to normal
+- **CORE-specific**: Rotates on persistent 429s (after exponential backoff retries exhausted); aborts phase after 5 consecutive rate limits without VPN
 - **Graceful degradation**: If VPN rotation fails repeatedly, continues without rotation
 
 **Rotation strategies** (`vpn.rotation_strategy`):
@@ -171,7 +172,10 @@ All settings in `config/settings.yaml`:
 - `vpn.rotate_every_n_papers`: Papers between proactive rotations (default: 20)
 - `vpn.connection_timeout`: Seconds to wait for VPN connection (default: 30)
 - `vpn.max_rotation_failures`: Max consecutive failures before disabling rotation (default: 3)
-- `core.delay_seconds`: Delay between CORE API requests (default: 0.2s)
+- `core.api_key`: Free CORE API key for higher rate limits (get at core.ac.uk/services/api)
+- `core.delay_seconds`: Delay between CORE API requests (default: 1.0s)
+- `core.max_retries`: Retries per paper on 429 with exponential backoff (default: 3)
+- `core.backoff_factor`: Multiplier for backoff delays — 5s, 10s, 20s (default: 2.0)
 - `europepmc.delay_seconds`: Delay between EuropePMC requests (default: 0.2s)
 - `arxiv.delay_seconds`: Delay between arXiv requests (default: 3s, recommended by arXiv)
 - `crossref.delay_seconds`: Delay between Crossref requests (default: 0.5s)

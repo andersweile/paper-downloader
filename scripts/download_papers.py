@@ -186,13 +186,19 @@ def run_url_transform_phase(manifest: dict, dl_timeout: int, dl_retries: int, dl
     click.echo(f"  URL transforms: {downloaded} downloaded")
 
 
-def run_repo_api_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float) -> None:
+def run_repo_api_phase(
+    manifest: dict, settings: dict, dl_timeout: int, dl_retries: int, dl_delay: float, vpn=None
+) -> None:
     """Phase 5: Search open repository APIs (CORE, EuropePMC, arXiv)."""
     from src.arxiv_search import find_pdf_url as arxiv_find_pdf_url
     from src.core_api import find_pdf_url as core_find_pdf_url
     from src.europepmc import find_pdf_url as europepmc_find_pdf_url
 
-    core_delay = settings.get("core", {}).get("delay_seconds", 0.2)
+    core_settings = settings.get("core", {})
+    core_delay = core_settings.get("delay_seconds", 1.0)
+    core_api_key = core_settings.get("api_key", "") or None
+    core_max_retries = core_settings.get("max_retries", 3)
+    core_backoff = core_settings.get("backoff_factor", 2.0)
     epmc_delay = settings.get("europepmc", {}).get("delay_seconds", 0.2)
     arxiv_delay = settings.get("arxiv", {}).get("delay_seconds", 3.0)
 
@@ -207,11 +213,49 @@ def run_repo_api_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retri
 
     # --- 5a: CORE.ac.uk ---
     click.echo(f"\n  5a. CORE.ac.uk ({len(candidates)} papers)...")
+    if core_api_key:
+        click.echo("  Using CORE API key for higher rate limits.")
+    if vpn and not vpn.has_failed_permanently():
+        click.echo(f"  VPN rotation enabled: every {vpn.rotate_every_n} papers")
+
     core_downloaded = 0
+    core_completed = 0
+    consecutive_rate_limits = 0
+
     for pid, entry in tqdm(candidates.items(), desc="CORE", unit="paper"):
+        # Proactive VPN rotation
+        if vpn and not vpn.has_failed_permanently():
+            if vpn.should_rotate_proactively(core_completed):
+                click.echo(f"\n  Proactive VPN rotation after {core_completed} CORE papers...")
+                if vpn.rotate():
+                    consecutive_rate_limits = 0
+                    click.echo("  Rotated to fresh IP.")
+
         doi = entry.get("doi")
         title = entry.get("title")
-        pdf_url = core_find_pdf_url(doi=doi, title=title, delay=core_delay)
+        pdf_url, was_rate_limited = core_find_pdf_url(
+            doi=doi, title=title, delay=core_delay,
+            api_key=core_api_key, max_retries=core_max_retries, backoff_factor=core_backoff,
+        )
+
+        # Reactive VPN rotation on persistent rate limit
+        if was_rate_limited:
+            consecutive_rate_limits += 1
+            if vpn and not vpn.has_failed_permanently():
+                click.echo(f"\n  CORE rate limited (streak: {consecutive_rate_limits}). Rotating VPN...")
+                if vpn.rotate():
+                    consecutive_rate_limits = 0
+                    click.echo("  Rotated. Retrying paper with fresh IP...")
+                    pdf_url, was_rate_limited = core_find_pdf_url(
+                        doi=doi, title=title, delay=core_delay,
+                        api_key=core_api_key, max_retries=core_max_retries, backoff_factor=core_backoff,
+                    )
+            elif consecutive_rate_limits >= 5:
+                click.echo("\n  CORE: 5 consecutive rate limits without VPN. Aborting CORE phase.")
+                break
+
+        if not was_rate_limited:
+            consecutive_rate_limits = 0
 
         if pdf_url:
             output_path = PDF_DIR / f"{pid}.pdf"
@@ -228,6 +272,8 @@ def run_repo_api_phase(manifest: dict, settings: dict, dl_timeout: int, dl_retri
                 core_downloaded += 1
                 save_manifest(manifest, get_manifest_path())
             time.sleep(dl_delay)
+
+        core_completed += 1
 
     click.echo(f"  CORE: {core_downloaded} downloaded")
 
@@ -513,7 +559,7 @@ def download(
     # --- repos-only shortcut: jump directly to Phase 5 ---
     if repos_only:
         click.echo("\n--- Phase 5: Repository APIs (repos-only mode) ---")
-        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay, vpn=vpn)
         save_manifest(manifest, manifest_path)
         click.echo(f"\nFinal status: {dict(count_by_status(manifest))}")
         return
@@ -662,7 +708,7 @@ def download(
     # --- Phase 5: Repository APIs (CORE, EuropePMC, arXiv) ---
     if not open_access_only and not scholar_only:
         click.echo("\n--- Phase 5: Repository APIs ---")
-        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay)
+        run_repo_api_phase(manifest, settings, dl_timeout, dl_retries, dl_delay, vpn=vpn)
         save_manifest(manifest, manifest_path)
 
     # --- Phase 6: Expanded URL Transforms (re-run on failed with new transforms) ---
