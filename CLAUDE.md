@@ -1,11 +1,11 @@
-# LBD Systematic Review - PDF Download Pipeline
+# Paper Downloader - PDF Download Pipeline
 
 ## Purpose
 Download PDFs for 408 literature-based discovery papers identified via Semantic Scholar. 10-phase pipeline: DOI enrichment, open access, Unpaywall, URL transforms, Google Scholar, repository APIs, expanded transforms, Crossref, institutional proxy, and Sci-Hub.
 
 ## Project Structure
 ```
-lbd-systematic-review/
+paper-downloader/
 ├── pyproject.toml              # Dependencies: click, curl_cffi, requests, scholarly, pyyaml, tqdm
 ├── config/
 │   └── settings.yaml           # Source JSON path, all phase settings
