@@ -40,6 +40,7 @@ async def _download_pdf_async(url: str, output_path: Path, timeout: int = 60) ->
     """
     try:
         import nodriver as uc
+        import nodriver.cdp as cdp
     except ImportError:
         logger.error("nodriver not installed. Run: uv add nodriver")
         return "error"
@@ -58,10 +59,7 @@ async def _download_pdf_async(url: str, output_path: Path, timeout: int = 60) ->
 
         # Configure download behavior via CDP
         page = await browser.get("about:blank")
-        await page.send(
-            "Browser.setDownloadBehavior",
-            {"behavior": "allow", "downloadPath": download_dir},
-        )
+        await page.send(cdp.browser.set_download_behavior(behavior="allow", download_path=download_dir))
 
         # Navigate to the URL
         logger.debug(f"Browser navigating to: {url}")
@@ -81,26 +79,8 @@ async def _download_pdf_async(url: str, output_path: Path, timeout: int = 60) ->
             output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(pdfs[0]), str(output_path))
             logger.info(f"Browser download succeeded: {url}")
-            await browser.stop()
+            browser.stop()
             return "ok"
-
-        # No PDF downloaded — try to get page content and check if it's a PDF
-        # Some sites serve PDF inline
-        try:
-            # Check content-type of current page
-            response_info = await page.send("Network.getResponseBody", {"requestId": "main_frame"})
-            if response_info and "body" in response_info:
-                body = response_info.get("body", b"")
-                if isinstance(body, str):
-                    body = body.encode()
-                if body[:5] == b"%PDF-":
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_bytes(body)
-                    logger.info(f"Browser captured inline PDF: {url}")
-                    await browser.stop()
-                    return "ok"
-        except Exception:
-            pass  # Not all pages support this
 
         # Last resort: try clicking a download button if present
         try:
@@ -126,7 +106,7 @@ async def _download_pdf_async(url: str, output_path: Path, timeout: int = 60) ->
                             output_path.parent.mkdir(parents=True, exist_ok=True)
                             shutil.move(str(pdfs[0]), str(output_path))
                             logger.info(f"Browser download via click succeeded: {url}")
-                            await browser.stop()
+                            browser.stop()
                             return "ok"
                 except Exception:
                     continue
@@ -134,7 +114,7 @@ async def _download_pdf_async(url: str, output_path: Path, timeout: int = 60) ->
             logger.debug(f"No download button found: {e}")
 
         logger.warning(f"Browser: no PDF obtained from {url}")
-        await browser.stop()
+        browser.stop()
         return "not_pdf"
 
     except asyncio.TimeoutError:
